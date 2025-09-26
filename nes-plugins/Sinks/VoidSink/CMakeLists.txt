@@ -10,18 +10,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_nes_common_test(nes-common-tests
-        "ThreadNamingTest.cpp"
-        "NonBlockingMonotonicSeqQueueTest.cpp"
-        "UtilFunctionTest.cpp"
-        "StringUtilTest.cpp"
-        "RangesTest.cpp"
-        "LogLevelTest.cpp"
-        "BFSIteratorTest.cpp"
-        "RollingAverageTest.cpp"
-        "TypeTraitsTest.cpp"
-)
+include(${PROJECT_SOURCE_DIR}/cmake/PluginRegistrationUtil.cmake)
+add_plugin_as_library(Void Sink nes-sinks-registry void_sink_plugin VoidSink.cpp)
+add_plugin_as_library(Void SinkValidation nes-sinks-registry void_sink_validation_plugin VoidSink.cpp)
 
-add_nes_test(chunk-collector-test
-        "ChunkCollectorTest.cpp"
+target_include_directories(void_sink_plugin
+        PUBLIC include
+        PRIVATE .
+)
+target_include_directories(void_sink_validation_plugin
+        PUBLIC include
+        PRIVATE .
 )

@@ -184,6 +184,7 @@ static constexpr auto QueryToken = "SELECT"s;
 static constexpr auto SinkToken = "SINK"s;
 static constexpr auto ResultDelimiter = "----"s;
 static constexpr auto ErrorToken = "ERROR"s;
+static constexpr auto DifferentialToken = "===="s;
 
 static const std::array stringToToken = std::to_array<std::pair<std::string_view, TokenType>>(
     {{SystestLogicalSourceToken, TokenType::LOGICAL_SOURCE},
@@ -191,7 +192,8 @@ static const std::array stringToToken = std::to_array<std::pair<std::string_view
      {QueryToken, TokenType::QUERY},
      {SinkToken, TokenType::SINK},
      {ResultDelimiter, TokenType::RESULT_DELIMITER},
-     {ErrorToken, TokenType::ERROR_EXPECTATION}});
+     {ErrorToken, TokenType::ERROR_EXPECTATION},
+     {DifferentialToken, TokenType::DIFFERENTIAL}});
 
 void SystestParser::registerSubstitutionRule(const SubstitutionRule& rule)
 {
@@ -272,6 +274,11 @@ void SystestParser::registerOnErrorExpectationCallback(ErrorExpectationCallback 
     this->onErrorExpectationCallback = std::move(callback);
 }
 
+void SystestParser::registerOnDifferentialQueryBlockCallback(DifferentialQueryBlockCallback callback)
+{
+    this->onDifferentialQueryBlockCallback = std::move(callback);
+}
+
 /// Here we model the structure of the test file by what we `expect` to see.
 void SystestParser::parse()
 {
@@ -308,15 +315,26 @@ void SystestParser::parse()
                 break;
             }
             case TokenType::QUERY: {
+                static const std::unordered_set<TokenType> defaultQueryStopTokens{
+                    TokenType::RESULT_DELIMITER,
+                    TokenType::DIFFERENTIAL,
+                    TokenType::LOGICAL_SOURCE,
+                    TokenType::ATTACH_SOURCE,
+                    TokenType::SINK};
+
+                auto query = expectQuery(defaultQueryStopTokens);
+                lastParsedQuery = query;
+                auto queryId = queryIdAssigner.getNextQueryNumber();
+                lastParsedQueryId = queryId;
                 if (onQueryCallback)
                 {
-                    onQueryCallback(expectQuery(), queryIdAssigner.getNextQueryNumber());
+                    onQueryCallback(query, queryId);
                 }
                 break;
             }
             case TokenType::RESULT_DELIMITER: {
-                /// Look ahead for error expectation
-                if (const auto optionalToken = peekToken(); optionalToken == TokenType::ERROR_EXPECTATION)
+                const auto optionalToken = peekToken();
+                if (optionalToken == TokenType::ERROR_EXPECTATION)
                 {
                     ++currentLine;
                     auto expectation = expectError();
@@ -334,6 +352,23 @@ void SystestParser::parse()
                 }
                 break;
             }
+            case TokenType::DIFFERENTIAL: {
+                INVARIANT(lastParsedQuery.has_value() && lastParsedQueryId.has_value(), "Differential block without preceding query");
+
+                auto [leftQuery, rightQuery] = expectDifferentialBlock();
+                const auto mainQueryId = lastParsedQueryId.value();
+                auto differentialQueryId = queryIdAssigner.getNextQueryResultNumber();
+
+                lastParsedQuery = rightQuery;
+                lastParsedQueryId = differentialQueryId;
+
+                if (onDifferentialQueryBlockCallback)
+                {
+                    onDifferentialQueryBlockCallback(std::move(leftQuery), std::move(rightQuery), mainQueryId, differentialQueryId);
+                }
+                break;
+            }
+
             case TokenType::INVALID:
                 throw SLTUnexpectedToken(
                     "Should never run into the INVALID token during systest file parsing, but got line: {}.", lines[currentLine]);
@@ -378,7 +413,7 @@ std::optional<TokenType> SystestParser::getTokenIfValid(std::string potentialTok
     {
         return it->second;
     }
-    return TokenType::INVALID;
+    return std::nullopt;
 }
 
 bool SystestParser::moveToNextToken()
@@ -387,6 +422,10 @@ bool SystestParser::moveToNextToken()
     if (firstToken)
     {
         firstToken = false;
+    }
+    else if (shouldRevisitCurrentLine)
+    {
+        shouldRevisitCurrentLine = false;
     }
     else
     {
@@ -416,7 +455,12 @@ std::optional<TokenType> SystestParser::getNextToken()
 
     INVARIANT(!potentialToken.empty(), "a potential token should never be empty");
 
-    return getTokenIfValid(potentialToken);
+    if (auto token = getTokenIfValid(potentialToken); token.has_value())
+    {
+        return token;
+    }
+
+    throw SLTUnexpectedToken("Should never run into the INVALID token during systest file parsing, but got line: {}.", lines[currentLine]);
 }
 
 std::optional<TokenType> SystestParser::peekToken() const
@@ -693,9 +737,24 @@ std::vector<std::string> SystestParser::expectTuples(const bool ignoreFirst)
     {
         currentLine++;
     }
-    /// read the tuples until we encounter an empty line
-    while (currentLine < lines.size() && !lines[currentLine].empty())
+    /// read the tuples until we encounter an empty line or the next token
+    while (currentLine < lines.size())
     {
+        if (lines[currentLine].empty())
+        {
+            break;
+        }
+
+        std::string potentialToken;
+        std::istringstream stream(lines[currentLine]);
+        if (stream >> potentialToken)
+        {
+            if (auto tokenType = getTokenIfValid(potentialToken); tokenType.has_value())
+            {
+                break;
+            }
+        }
+
         tuples.push_back(lines[currentLine]);
         currentLine++;
     }
@@ -704,30 +763,106 @@ std::vector<std::string> SystestParser::expectTuples(const bool ignoreFirst)
 
 std::string SystestParser::expectQuery()
 {
-    INVARIANT(currentLine < lines.size(), "current line to parse should exist");
+    return expectQuery({TokenType::RESULT_DELIMITER});
+}
+
+std::string SystestParser::expectQuery(const std::unordered_set<TokenType>& stopTokens)
+{
+    INVARIANT(currentLine < lines.size(), "current parse line should exist");
+
     std::string queryString;
-    bool firstLine = true;
     while (currentLine < lines.size())
     {
-        if (!emptyOrComment(lines[currentLine]))
+        const auto& line = lines[currentLine];
+        if (emptyOrComment(line))
         {
-            /// Query definition ends with result delimiter.
-            if (Util::toLowerCase(lines[currentLine]) == Util::toLowerCase(ResultDelimiter))
+            if (!queryString.empty())
             {
-                --currentLine;
-                break;
+                const auto trimmedQuerySoFar = Util::trimWhiteSpaces(std::string_view(queryString));
+                if (!trimmedQuerySoFar.empty() && trimmedQuerySoFar.back() == ';')
+                {
+                    break;
+                }
             }
-            if (!firstLine)
-            {
-                queryString += "\n";
-            }
-            queryString += lines[currentLine];
-            firstLine = false;
+            ++currentLine;
+            continue;
         }
-        currentLine++;
+
+        /// Check if we've reached a stop token
+        std::string potentialToken;
+        std::istringstream stream(line);
+        if (stream >> potentialToken)
+        {
+            if (auto tokenType = getTokenIfValid(potentialToken); tokenType.has_value())
+            {
+                if (stopTokens.contains(tokenType.value()))
+                {
+                    break;
+                }
+            }
+            else
+            {
+                const auto trimmedLineView = Util::trimWhiteSpaces(std::string_view(line));
+                if (!trimmedLineView.empty() && Util::toLowerCase(trimmedLineView) == "differential")
+                {
+                    throw SLTUnexpectedToken(
+                        "Expected differential delimiter '{}' but encountered legacy keyword '{}'", DifferentialToken, line);
+                }
+            }
+        }
+
+        if (!queryString.empty())
+        {
+            queryString += "\n";
+        }
+        queryString += line;
+        ++currentLine;
     }
-    INVARIANT(!queryString.empty(), "when expecting a query keyword the queryString should not be empty");
+
+    if (queryString.empty())
+    {
+        throw SLTUnexpectedToken("Expected query but got empty query string");
+    }
+
+    shouldRevisitCurrentLine = currentLine < lines.size();
     return queryString;
+}
+
+std::pair<std::string, std::string> SystestParser::expectDifferentialBlock()
+{
+    INVARIANT(currentLine < lines.size(), "current parse line should exist");
+    INVARIANT(lastParsedQuery.has_value(), "Differential block must follow a query definition");
+
+    std::string potentialToken;
+    std::istringstream stream(lines[currentLine]);
+    if (!(stream >> potentialToken))
+    {
+        throw SLTUnexpectedToken("Expected differential delimiter at current line");
+    }
+
+    auto tokenOpt = getTokenIfValid(potentialToken);
+    if (!tokenOpt.has_value() || tokenOpt.value() != TokenType::DIFFERENTIAL)
+    {
+        throw SLTUnexpectedToken("Expected differential delimiter at current line");
+    }
+
+    /// Skip the differential delimiter line
+    ++currentLine;
+    shouldRevisitCurrentLine = false;
+
+    static const std::unordered_set<TokenType> differentialStopTokens{
+        TokenType::LOGICAL_SOURCE,
+        TokenType::ATTACH_SOURCE,
+        TokenType::SINK,
+        TokenType::RESULT_DELIMITER,
+        TokenType::DIFFERENTIAL,
+        TokenType::ERROR_EXPECTATION};
+
+    /// Parse the differential query until the next recognized section
+    std::string rightQuery = expectQuery(differentialStopTokens);
+    const std::string leftQuery = lastParsedQuery.value();
+
+    return {leftQuery, std::move(rightQuery)};
 }
 
 SystestParser::ErrorExpectation SystestParser::expectError() const

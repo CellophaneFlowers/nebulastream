@@ -46,6 +46,7 @@ enum class TokenType : uint8_t
     QUERY,
     RESULT_DELIMITER,
     ERROR_EXPECTATION,
+    DIFFERENTIAL
 };
 
 /// Assures that the number of parsed queries matches the number of parsed results
@@ -151,6 +152,8 @@ public:
     using SystestAttachSourceCallback = std::function<void(SystestAttachSource attachSource)>;
     using SystestSinkCallback = std::function<void(SystestSink&&)>;
     using ErrorExpectationCallback = std::function<void(const ErrorExpectation&, SystestQueryId correspondingQueryId)>;
+    using DifferentialQueryBlockCallback
+        = std::function<void(std::string, std::string, SystestQueryId correspondingQueryId, SystestQueryId diffQueryId)>;
 
     /// Register callbacks to be called when the respective section is parsed
     void registerOnQueryCallback(QueryCallback callback);
@@ -159,6 +162,7 @@ public:
     void registerOnSystestAttachSourceCallback(SystestAttachSourceCallback callback);
     void registerOnSystestSinkCallback(SystestSinkCallback callback);
     void registerOnErrorExpectationCallback(ErrorExpectationCallback callback);
+    void registerOnDifferentialQueryBlockCallback(DifferentialQueryBlockCallback callback);
 
     void parse();
     void parseResultLines();
@@ -183,6 +187,8 @@ private:
     [[nodiscard]] std::vector<std::string> expectTuples(bool ignoreFirst);
     [[nodiscard]] std::filesystem::path expectFilePath();
     [[nodiscard]] std::string expectQuery();
+    [[nodiscard]] std::string expectQuery(const std::unordered_set<TokenType>& stopTokens);
+    [[nodiscard]] std::pair<std::string, std::string> expectDifferentialBlock();
     [[nodiscard]] ErrorExpectation expectError() const;
     [[nodiscard]] std::pair<SystestLogicalSource, std::optional<SystestAttachSource>>
     expectInlineGeneratorSource(SystestLogicalSource& source, const std::vector<std::string>& attachSourceTokens);
@@ -193,8 +199,12 @@ private:
     SystestAttachSourceCallback onAttachSourceCallback;
     SystestSinkCallback onSystestSinkCallback;
     ErrorExpectationCallback onErrorExpectationCallback;
+    DifferentialQueryBlockCallback onDifferentialQueryBlockCallback;
 
+    std::optional<std::string> lastParsedQuery;
+    std::optional<SystestQueryId> lastParsedQueryId;
     bool firstToken = true;
+    bool shouldRevisitCurrentLine = false;
     size_t currentLine = 0;
     std::vector<std::string> lines;
 };
