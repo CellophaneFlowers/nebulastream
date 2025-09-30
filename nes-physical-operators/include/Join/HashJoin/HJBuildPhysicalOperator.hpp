@@ -24,6 +24,7 @@
 #include <Runtime/Execution/OperatorHandler.hpp>
 #include <Time/Timestamp.hpp>
 #include <Watermark/TimeFunction.hpp>
+#include <CompilationContext.hpp>
 #include <ExecutionContext.hpp>
 #include <HashMapOptions.hpp>
 
@@ -40,7 +41,7 @@ Interface::HashMap* getHashJoinHashMapProxy(
 /// This class is the first phase of the join. For both streams (left and right), the tuples are stored in a hash map of a
 /// corresponding slice one after the other. Afterward, the second phase (HJProbe) will start joining the tuples by comparing the join keys
 /// via a hash function.
-class HJBuildPhysicalOperator final : public StreamJoinBuildPhysicalOperator
+class HJBuildPhysicalOperator : public StreamJoinBuildPhysicalOperator
 {
 public:
     friend Interface::HashMap* getHashJoinHashMapProxy(
@@ -55,7 +56,7 @@ public:
         std::unique_ptr<TimeFunction> timeFunction,
         const std::shared_ptr<Interface::MemoryProvider::TupleBufferMemoryProvider>& memoryProvider,
         HashMapOptions hashMapOptions);
-    void setup(ExecutionContext& executionCtx) const override;
+    void setup(ExecutionContext& executionCtx, CompilationContext& compilationContext) const override;
     void execute(ExecutionContext& ctx, Record& record) const override;
 
 private:
