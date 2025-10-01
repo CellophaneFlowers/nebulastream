@@ -26,6 +26,7 @@
 #include <variant>
 #include <vector>
 
+#include <span>
 #include <DataTypes/DataType.hpp>
 #include <DataTypes/Schema.hpp>
 #include <MemoryLayout/ColumnLayout.hpp>
@@ -37,13 +38,11 @@
 #include <include/Runtime/TupleBuffer.hpp>
 #include <magic_enum/magic_enum.hpp>
 #include <ErrorHandling.hpp>
-#include <span>
 
 namespace NES
 {
 
-DynamicField::DynamicField(std::span<const uint8_t> memory, DataType physicalType)
-    : memory(memory), physicalType(std::move(physicalType))
+DynamicField::DynamicField(std::span<const uint8_t> memory, DataType physicalType) : memory(memory), physicalType(std::move(physicalType))
 {
 }
 
@@ -52,8 +51,9 @@ DynamicField DynamicTuple::operator[](const std::size_t fieldIndex) const
     auto* bufferBasePointer = buffer.getBuffer<uint8_t>();
     const auto offset = memoryLayout->getFieldOffset(tupleIndex, fieldIndex);
     auto* basePointer = bufferBasePointer + offset;
-    return DynamicField{std::span<const uint8_t>(basePointer, memoryLayout->getPhysicalType(fieldIndex).getSizeInBytes()),
-                        memoryLayout->getPhysicalType(fieldIndex)};
+    return DynamicField{
+        std::span<const uint8_t>(basePointer, memoryLayout->getPhysicalType(fieldIndex).getSizeInBytes()),
+        memoryLayout->getPhysicalType(fieldIndex)};
 }
 
 DynamicField DynamicTuple::operator[](std::string fieldName) const

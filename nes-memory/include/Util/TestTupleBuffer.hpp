@@ -20,6 +20,7 @@
 #include <cstring>
 #include <memory>
 #include <ostream>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <variant>
@@ -29,7 +30,6 @@
 #include <Runtime/BufferManager.hpp>
 #include <Util/Logger/Logger.hpp>
 #include <ErrorHandling.hpp>
-#include <span>
 
 namespace NES
 {
